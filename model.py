@@ -54,37 +54,64 @@ def fetch_data(symbol, days):
 
     return df
 
+def get_balance():
+    # Get account information
+    account = api.get_account()
+
+    # Get the current cash balance
+    cash = float(account.cash)
+
+    return cash
+
+def decide_quantity(cash, last_close):
+    # Decide quantity based on available cash balance and last closing price
+    # This simple strategy will attempt to use all available cash to buy as many shares as possible
+    quantity = int(cash / last_close)
+
+    return quantity
+
+
 def train_model(X_train, y_train):
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
     return model
 
 def predict_and_trade(model, X_last, last_close, symbol):
+    # Model Prediction
     next_day_close = model.predict([X_last])
 
+    # Balance Check
+    cash = get_balance()
+
+    # Decide the quantity for transaction
+    quantity = decide_quantity(cash, last_close)
+    
     action = ""
     if next_day_close > last_close:
-        print(f"Buy: {symbol}")
+        if cash > last_close:
+            print(f"Buy {quantity} {symbol}")
+            api.submit_order(
+                symbol=symbol,
+                qty=quantity,
+                side='buy',
+                type='market',
+                time_in_force='gtc'
+            )
+            action = "buy"
+        else:
+            print("Insufficient funds to buy")
+    elif next_day_close < last_close:
+        print(f"Sell {quantity} {symbol}")
         api.submit_order(
             symbol=symbol,
-            qty=1,
-            side='buy',
-            type='market',
-            time_in_force='gtc'
-        )
-        action = "buy"
-    else:
-        print(f"Sell: {symbol}")
-        api.submit_order(
-            symbol=symbol,
-            qty=1,
+            qty=quantity,
             side='sell',
             type='market',
             time_in_force='gtc'
         )
         action = "sell"
 
-    # Write to CSV file
+    # Write prediction, actual price, and action to CSV file
     data = {
         'timestamp': [datetime.now().isoformat()],
         'symbol': [symbol],
@@ -100,6 +127,8 @@ def predict_and_trade(model, X_last, last_close, symbol):
         df.to_csv('trading_data.csv', index=False)
     else:  # else it exists so append without writing the header
         df.to_csv('trading_data.csv', mode='a', header=False, index=False)
+
+
 
 def is_market_open():
     # Get the current time in Eastern Time
