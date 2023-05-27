@@ -5,26 +5,26 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
-from pandas_datareader import data as pdr
-import yfinance as yf
 import alpaca_trade_api as tradeapi
-
-yf.pdr_override()
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize Alpaca API
-load_dotenv()
-
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets') 
 
+# Fetch intra-day data (say, for the last 50 days)
+data = api.get_barset('AAPL', 'day', limit=50).df['AAPL']
 
-# Fetch data from 2018-01-01 to 2023-05-01
-df = pdr.get_data_yahoo("AAPL", start="2018-01-01", end="2023-05-01")
+# Transform the data to the format similar to what we had before
+df = pd.DataFrame()
+df['Open'] = data['open']
+df['High'] = data['high']
+df['Low'] = data['low']
+df['Close'] = data['close']
 
 # Use shift to create the past 5 days' closing price columns
 for i in range(1, 6):
@@ -34,7 +34,7 @@ for i in range(1, 6):
 df = df.dropna()
 
 # Predict the next day's closing price, so the target column will be the 'Close' column shifted up by 1
-df['Target'] = df['Close'].shift(-1)
+df.loc[:, 'Target'] = df['Close'].shift(-1)
 
 # Drop the rows for which we don't have target value
 df = df.dropna()
