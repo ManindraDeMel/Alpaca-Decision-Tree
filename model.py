@@ -4,12 +4,11 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
 import alpaca_trade_api as tradeapi
 from alpaca_trade_api import TimeFrame
-import pytz
-import matplotlib.pyplot as plt
+from util import get_balance, decide_quantity, own_stock
 import warnings
+from train import train_model
 warnings.filterwarnings('ignore')
 
 
@@ -21,6 +20,9 @@ ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets') 
+
+# Define the threshold for price changes (e.g. 1% change)
+THRESHOLD = 0.01
 
 def fetch_data(symbol, days):
     # Get the current datetime in UTC
@@ -54,63 +56,53 @@ def fetch_data(symbol, days):
 
     return df
 
-def get_balance():
-    # Get account information
-    account = api.get_account()
-
-    # Get the current cash balance
-    cash = float(account.cash)
-
-    return cash
-
-def decide_quantity(cash, last_close):
-    # Decide quantity based on available cash balance and last closing price
-    # This simple strategy will attempt to use all available cash to buy as many shares as possible
-    quantity = int(cash / last_close)
-
-    return quantity
-
-
-def train_model(X_train, y_train):
-    model = RandomForestRegressor(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
-    return model
-
 def predict_and_trade(model, X_last, last_close, symbol):
     # Model Prediction
     next_day_close = model.predict([X_last])
+    # next_day_close = [last_close * 0.9]
+    print(f'next_day_close: {next_day_close}, last_close: {last_close}, buy_threshold: {last_close * (1 + THRESHOLD)}, sell_threshold: {last_close * (1 - THRESHOLD)}')
 
     # Balance Check
-    cash = get_balance()
+    cash = get_balance(api)
 
     # Decide the quantity for transaction
     quantity = decide_quantity(cash, last_close)
     
     action = ""
-    if next_day_close > last_close:
-        if cash > last_close:
+    if next_day_close > last_close * (1 + THRESHOLD):
+        if cash > last_close * quantity and not own_stock(symbol, api):
             print(f"Buy {quantity} {symbol}")
             api.submit_order(
                 symbol=symbol,
                 qty=quantity,
                 side='buy',
-                type='market',
-                time_in_force='gtc'
+                type='limit',
+                time_in_force='day',
+                extended_hours=True,
+                limit_price=round(next_day_close[0], 2)
             )
             action = "buy"
         else:
-            print("Insufficient funds to buy")
-    elif next_day_close < last_close:
-        print(f"Sell {quantity} {symbol}")
-        api.submit_order(
-            symbol=symbol,
-            qty=quantity,
-            side='sell',
-            type='market',
-            time_in_force='gtc'
-        )
-        action = "sell"
-
+            print("Holding (Insufficent funds)")
+            action = "hold"
+    elif next_day_close < last_close * (1 - THRESHOLD):
+        if own_stock(symbol, api):
+            print(f"Sell {quantity} {symbol}")
+            api.submit_order(
+                symbol=symbol,
+                qty=quantity,
+                side='sell',
+                type='limit',
+                time_in_force='gtc',
+                limit_price=round(last_close * (1 + THRESHOLD), 2)
+            )
+            action = "sell"
+        else:
+            print("No shares to sell")
+    else:
+        print("Hold")
+        action = "hold"
+        
     # Write prediction, actual price, and action to CSV file
     data = {
         'timestamp': [datetime.now().isoformat()],
@@ -128,30 +120,8 @@ def predict_and_trade(model, X_last, last_close, symbol):
     else:  # else it exists so append without writing the header
         df.to_csv('trading_data.csv', mode='a', header=False, index=False)
 
-
-
-def is_market_open():
-    # Get the current time in Eastern Time
-    now = datetime.now(pytz.timezone('US/Eastern'))
-
-    # Define market open and close hours
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-
-    # Check if the current time is within market hours
-    return market_open <= now <= market_close
-
-def plot_data(df):
-    plt.plot(df['Close'])
-    plt.title('Closing Prices Over Time')
-    plt.xlabel('Time')
-    plt.ylabel('Price')
-    plt.show(block=False)
-    plt.pause(0.1)
-    plt.close()
-
 def main():
-    print("Starting bot")
+    print("Starting bot\n################")
     symbol = 'AAPL'
     days = 120
     test_size = 0.2
@@ -169,7 +139,6 @@ def main():
 
         # Continue with model evaluation
         score = model.score(X_test, y_test)
-        print(f"Model Score: {score}\n")
 
         # Get the last row of data (most recent)
         X_last = df.iloc[-1].drop('Target')
